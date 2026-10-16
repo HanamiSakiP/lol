@@ -1,0 +1,7 @@
+{
+	"registry-mirrors": [
+	"https://docker.xuanyuan.me",
+	"https://docker.1ms.run",
+	"https://hub.rat.dev"],
+	"data-root": "/new/docker"
+}
