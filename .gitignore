@@ -1,0 +1,6 @@
+dev/tools/g/*
+dev/tools/nvm/*
+dev/tools/pyenv/*
+!dev/tools/g/.gitkeep
+!dev/tools/nvm/.gitkeep
+!dev/tools/pyenv/.gitkeep

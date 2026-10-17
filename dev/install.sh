@@ -2,6 +2,9 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+# ========== 脚本位置 ==========
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
 # ========== 环境初始化 ==========
 export PS1="${PS1:-\\u@\\h:\\w\\$ }"
 export debian_chroot="${debian_chroot:-}"
@@ -32,6 +35,65 @@ add_config() {
   fi
 }
 
+# ========== 本地备份探测（用于优先恢复） ==========
+# 支持两种存放结构：
+#   1) <script_dir>/dev/tools/<tool>/<tool>_backup_*.tar.gz     （推荐）
+#   2) <script_dir>/dev/tools/<tool>_backup_*.tar.gz           （扁平）
+find_backup_tool() {
+  local tool="$1"
+  local base="$SCRIPT_DIR/dev/tools"
+  local -a files=()
+
+  if [[ -d "$base/$tool" ]]; then
+    shopt -s nullglob
+    files=("$base/$tool/${tool}_backup_"*.tar.gz)
+    shopt -u nullglob
+  fi
+
+  if (( ${#files[@]} == 0 )); then
+    shopt -s nullglob
+    files=("$base/${tool}_backup_"*.tar.gz)
+    shopt -u nullglob
+  fi
+
+  (( ${#files[@]} == 0 )) && return 0
+
+  # 按文件名排序（时间戳形式），取最新一个
+  printf '%s\n' "${files[@]}" | LC_ALL=C sort | tail -n1
+}
+
+# try_restore_tool <pyenv|g|nvm>
+#   成功返回 0（表示已恢复，调用方应直接 return 跳过下载）
+#   失败返回 1（表示无备份或恢复失败，调用方继续原有在线安装流程）
+try_restore_tool() {
+  local tool="$1"
+
+  # 允许用户显式禁用本地恢复，强制在线安装
+  if [[ "${SKIP_LOCAL_RESTORE:-0}" == "1" ]]; then
+    return 1
+  fi
+
+  local restore_script="$SCRIPT_DIR/restore.sh"
+  if [[ ! -f "$restore_script" ]]; then
+    return 1
+  fi
+
+  local backup
+  backup=$(find_backup_tool "$tool")
+  if [[ -z "$backup" ]]; then
+    return 1
+  fi
+
+  log_info "检测到 $tool 本地备份: $(basename "$backup")，优先执行恢复（跳过在线下载）"
+  if bash "$restore_script" "$tool" "$backup"; then
+    log_info "$tool 已从本地备份恢复完成"
+    return 0
+  else
+    log_warn "$tool 本地备份恢复失败，将回退到在线安装"
+    return 1
+  fi
+}
+
 # ========== 依赖检查 ==========
 check_dependencies() {
   local deps=("curl" "git")
@@ -43,8 +105,16 @@ check_dependencies() {
   [[ -w "$HOME" ]] || log_error "用户目录 '$HOME' 不可写"
 }
 
-# ========== 安装 pyenv ==========
+# ========== 安装 pyenv（优先恢复本地备份） ==========
 install_pyenv() {
+  if try_restore_tool pyenv; then
+    # 子进程恢复不影响当前 shell，手动重设环境变量
+    export PYENV_ROOT="${PYENV_ROOT:-$HOME/.pyenv}"
+    [[ -d "$PYENV_ROOT/bin" ]] && export PATH="$PYENV_ROOT/bin:$PATH"
+    eval "$(pyenv init - bash)" 2>/dev/null || true
+    return 0
+  fi
+
   log_info "安装 Python 版本管理工具 pyenv..."
   local install_script
   install_script=$(mktemp)
@@ -76,8 +146,15 @@ install_pyenv() {
   eval "$(pyenv init - bash)"
 }
 
-# ========== 安装 g ==========
+# ========== 安装 g（优先恢复本地备份） ==========
 install_g() {
+  if try_restore_tool g; then
+    export GOROOT="$HOME/.g/go"
+    export PATH="$HOME/.g/bin:$GOROOT/bin:$PATH"
+    mkdir -p "$GOPATH"/{bin,src,pkg}
+    return 0
+  fi
+
   log_info "安装 Go 版本管理工具 g..."
   local install_script
   install_script=$(mktemp)
@@ -110,8 +187,15 @@ install_g() {
   mkdir -p "$GOPATH"/{bin,src,pkg}
 }
 
-# ========== 安装 nvm ==========
+# ========== 安装 nvm（优先恢复本地备份） ==========
 install_nvm() {
+  if try_restore_tool nvm; then
+    export NVM_DIR="$HOME/.nvm"
+    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+    [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+    return 0
+  fi
+
   log_info "安装 Node 版本管理工具 nvm..."
   local install_script
   install_script=$(mktemp)
@@ -222,11 +306,12 @@ main() {
 
   check_dependencies
 
+  # 每个 install_* 内部会先尝试本地备份恢复，失败/无备份才在线下载
   install_pyenv
   install_g
   install_nvm
 
-  # 安装后先 source ~/.bashrc，再验证
+  # 安装/恢复后先 source ~/.bashrc，再验证
   reload_shell_env
 
   verify_installation
