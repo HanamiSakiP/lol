@@ -38,6 +38,7 @@ usage() {
   1. 备份并清理 ~/.bashrc 与 ~/.profile 中由 install.sh / 官方安装脚本写入的配置
   2. 删除 ~/.pyenv、~/.g、~/.nvm（含已安装的语言版本）
   3. 默认删除 GOPATH 目录（${GOPATH}）；使用 -k 可保留
+  4. 结束后尝试 source ~/.bashrc 刷新环境
 EOF
 }
 
@@ -197,6 +198,28 @@ post_check() {
   [[ $found -eq 0 ]] && log_info "未发现残留"
 }
 
+# ========== 刷新环境变量 ==========
+refresh_env() {
+  local rc="$HOME/.bashrc"
+
+  if [[ ! -f "$rc" ]]; then
+    log_warn "未找到 $rc，跳过环境刷新"
+    return 0
+  fi
+
+  log_info "执行 source $rc ..."
+
+  # 在子 shell 中执行，避免 .bashrc 内的 exit / set -e / 未定义变量 / IFS 改动影响卸载脚本
+  if ( set +euo pipefail; IFS=$' \t\n'; source "$rc" >/dev/null 2>&1 ); then
+    log_info "source $rc 执行完成"
+  else
+    log_warn "source $rc 返回非零（不影响卸载结果），请手动检查该文件"
+  fi
+
+  # 脚本是独立进程，source 只能刷新子进程，无法改变父终端环境
+  log_info "注意: 当前终端环境需手动刷新，可执行: source ~/.bashrc，或直接执行 exec bash 以替换为新 shell（推荐）"
+}
+
 # ========== 主流程 ==========
 main() {
   confirm_uninstall
@@ -223,7 +246,9 @@ main() {
     echo -e "如需回滚，可执行: ${GREEN}cp -p $BACKUP_DIR/.bashrc.bak ~/.bashrc${NC}"
     echo -e "                 ${GREEN}cp -p $BACKUP_DIR/.profile.bak ~/.profile${NC}"
   fi
-  echo -e "当前终端仍持有旧的环境变量，请执行: ${GREEN}source ~/.bashrc${NC} 或直接重开终端"
+
+  # 5) 按要求执行 source ~/.bashrc
+  refresh_env
 }
 
 main "$@"
